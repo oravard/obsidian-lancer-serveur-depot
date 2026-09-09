@@ -675,18 +675,27 @@ module.exports = class LancerServeurPlugin extends Plugin {
   majBarreStatut() {
     if (this.statusBarEl) this.statusBarEl.remove();
 
-    const parts = [
-      this.session.qcm ? (this.session.fullscreen ? "QCM plein écran" : "QCM") : "Dépôt",
-    ];
-    if (this.session.documentSeance) parts.push("séance:" + path.basename(this.session.documentSeance));
-    if (this.session.supportCours) parts.push("support:" + path.basename(this.session.supportCours));
-    if (this.session.qcm) parts.push("qcm:" + path.basename(this.session.qcm));
+    // Libellé visible volontairement court et de largeur stable : uniquement le
+    // mode (+ la croix d'arrêt). Les noms de fichiers, potentiellement longs,
+    // élargiraient sinon le bouton de la barre de statut — ils passent donc dans
+    // l'infobulle (aria-label, affichée au survol par Obsidian).
+    const mode = this.session.qcm
+      ? (this.session.fullscreen ? "QCM plein écran" : "QCM")
+      : "Dépôt";
+
+    const details = [`cours « ${this.session.cours} »`];
+    if (this.session.documentSeance) details.push("séance : " + path.basename(this.session.documentSeance));
+    if (this.session.supportCours) details.push("support : " + path.basename(this.session.supportCours));
+    if (this.session.qcm) details.push("QCM : " + path.basename(this.session.qcm));
 
     this.statusBarEl = this.addStatusBarItem();
-    this.statusBarEl.setText(parts.join(" · ") + " ✕");
+    this.statusBarEl.setText(mode + " ✕");
     this.statusBarEl.addClass("mod-clickable");
     this.statusBarEl.style.cursor = "pointer";
-    this.statusBarEl.setAttribute("aria-label", "Cliquer pour arrêter le serveur de dépôt");
+    this.statusBarEl.setAttribute(
+      "aria-label",
+      details.join(" · ") + " — cliquer pour arrêter le serveur de dépôt"
+    );
     this.statusBarEl.addEventListener("click", () => this.stop_server());
   }
 
@@ -739,11 +748,16 @@ module.exports = class LancerServeurPlugin extends Plugin {
   majBarreStatutExpose() {
     if (this.exposeStatusBarEl) this.exposeStatusBarEl.remove();
 
+    // Même principe que majBarreStatut : libellé court et stable, le nom du
+    // dossier exposé (potentiellement long) va dans l'infobulle.
     this.exposeStatusBarEl = this.addStatusBarItem();
-    this.exposeStatusBarEl.setText(`Exposé · ${path.basename(this.exposeDir)} (:${EXPOSE_DIR_PORT}) ✕`);
+    this.exposeStatusBarEl.setText(`Exposé (:${EXPOSE_DIR_PORT}) ✕`);
     this.exposeStatusBarEl.addClass("mod-clickable");
     this.exposeStatusBarEl.style.cursor = "pointer";
-    this.exposeStatusBarEl.setAttribute("aria-label", "Cliquer pour arrêter le partage du dossier");
+    this.exposeStatusBarEl.setAttribute(
+      "aria-label",
+      `dossier : ${path.basename(this.exposeDir)} — cliquer pour arrêter le partage`
+    );
     this.exposeStatusBarEl.addEventListener("click", () => this.stopExposeDir());
   }
 

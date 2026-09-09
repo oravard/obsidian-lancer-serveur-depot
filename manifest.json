@@ -1,7 +1,7 @@
 {
   "id": "lancer-serveur-depot",
   "name": "Lancer serveur (dépôt)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.0.0",
   "description": "Ajoute une entrée dans le menu contextuel des fichiers PDF pour lancer le serveur de dépôt avec ce PDF comme document de séance.",
   "author": "Olivier Ravard",
