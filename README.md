@@ -22,26 +22,34 @@ le plugin :
 3. le bouton **Valider tout** écrit `note`, `corrige` et le détail
    (`corrections`) dans le frontmatter de chaque fiche de dépôt.
 
-Logique dans `correctionView.js` (chargé par `require()` depuis `main.js`,
-comme le reste : pas de bundler).
+Tout est dans `main.js` : Obsidian charge le plugin sans passer par un
+`require()` Node classique (pas de résolution relative fiable vers un fichier
+voisin), donc pas de découpage possible en plusieurs fichiers `.js` sans
+bundler — voir « Ce dossier est la source de vérité » ci-dessous.
 
 Voir [`../SPEC.md`](../SPEC.md) pour le cahier des charges du serveur.
 
 ## Ce dossier est la source de vérité
 
-`main.js` (et `correctionView.js`, chargé par `require()` pour la vue de
-correction) sont écrits **à la main** (pas de build, pas de TypeScript, pas
-d'esbuild) : ce sont à la fois la source et l'artefact livré. `manifest.json`
-va avec.
+`main.js` est écrit **à la main** (pas de build, pas de TypeScript, pas
+d'esbuild) : c'est à la fois la source et l'artefact livré — et ça doit rester
+un seul fichier (voir la mésaventure ci-dessous). `manifest.json` va avec.
+
+⚠️ Piège vérifié en pratique : `require("./un-autre-fichier.js")` échoue au
+chargement du plugin (`Cannot find module`), même si le fichier existe bien à
+côté de `main.js` sur le disque — Obsidian ne charge pas `main.js` avec un
+`require` Node standard résolu depuis le dossier réel du plugin. Seuls les
+modules Node intégrés (`path`, `fs`, `os`, `child_process`…) et `require("obsidian")`
+fonctionnent. Toute nouvelle fonctionnalité doit donc être écrite directement
+dans `main.js`, pas dans un fichier séparé chargé par `require()`.
 
 Le vault de test [`../dépot-test/reseaux/test-1CIEL1`](../dépot-test/reseaux/test-1CIEL1)
-n'a **pas de copie** : son dossier de plugin doit contenir un lien symbolique
-par fichier, vers ce dossier-ci —
+n'a **pas de copie** : son dossier de plugin contient deux liens symboliques
+vers ce dossier-ci —
 
 ```
-dépot-test/.../.obsidian/plugins/lancer-serveur-depot/main.js            -> ../../../../../../obsidian-lancer-serveur-depot/main.js
-dépot-test/.../.obsidian/plugins/lancer-serveur-depot/correctionView.js  -> ../../../../../../obsidian-lancer-serveur-depot/correctionView.js
-dépot-test/.../.obsidian/plugins/lancer-serveur-depot/manifest.json       -> ../../../../../../obsidian-lancer-serveur-depot/manifest.json
+dépot-test/.../.obsidian/plugins/lancer-serveur-depot/main.js       -> ../../../../../../obsidian-lancer-serveur-depot/main.js
+dépot-test/.../.obsidian/plugins/lancer-serveur-depot/manifest.json -> ../../../../../../obsidian-lancer-serveur-depot/manifest.json
 ```
 
 Éditer `main.js` ici (ou via le vault de test, c'est le même fichier), puis
