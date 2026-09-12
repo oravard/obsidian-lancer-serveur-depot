@@ -4,23 +4,44 @@ Plugin Obsidian (usage perso, `isDesktopOnly: true`) qui pilote le serveur de
 dépôt de fichiers élèves depuis Obsidian : menu contextuel sur un PDF / `.doc` /
 `.md` pour lancer `serveur.py` avec le bon `--cours`, `--document-seance`,
 `--support-cours` ou `--qcm`, entrée de ruban pour un dépôt simple, exposition
-d'un dossier en HTTP (`expose_dir.py`), et un éditeur de `config/cours/*.json`.
+d'un dossier en HTTP (`expose_dir.py`), un éditeur de `config/cours/*.json`, et
+la correction automatique des devoirs (`../corrector.py`).
+
+### Correction automatique
+
+Clic droit sur un PDF → *Corriger un devoir · ce PDF comme document de séance*
+puis, sur un autre PDF, *… comme corrigé professeur*. Une fois les deux
+renseignés (même cours, résolu par `CLASSE_DIR` comme pour les autres rôles),
+le plugin :
+
+1. cherche dans le vault les fiches de dépôt (`.md`) avec `a_noter: true` pour
+   ce cours, propose le choix du `type` s'il y en a plusieurs ;
+2. lance `../corrector_cli.py` en sous-processus sur les copies élèves
+   trouvées, et ouvre un onglet affichant les résultats au fil de l'eau
+   (question / réponse / note éditable / justification par élève) ;
+3. le bouton **Valider tout** écrit `note`, `corrige` et le détail
+   (`corrections`) dans le frontmatter de chaque fiche de dépôt.
+
+Logique dans `correctionView.js` (chargé par `require()` depuis `main.js`,
+comme le reste : pas de bundler).
 
 Voir [`../SPEC.md`](../SPEC.md) pour le cahier des charges du serveur.
 
 ## Ce dossier est la source de vérité
 
-`main.js` est écrit **à la main** (pas de build, pas de TypeScript, pas
-d'esbuild) : c'est à la fois la source et l'artefact livré. `manifest.json` va
-avec.
+`main.js` (et `correctionView.js`, chargé par `require()` pour la vue de
+correction) sont écrits **à la main** (pas de build, pas de TypeScript, pas
+d'esbuild) : ce sont à la fois la source et l'artefact livré. `manifest.json`
+va avec.
 
 Le vault de test [`../dépot-test/reseaux/test-1CIEL1`](../dépot-test/reseaux/test-1CIEL1)
-n'a **pas de copie** : son dossier de plugin contient deux liens symboliques
-vers ce dossier-ci —
+n'a **pas de copie** : son dossier de plugin doit contenir un lien symbolique
+par fichier, vers ce dossier-ci —
 
 ```
-dépot-test/.../.obsidian/plugins/lancer_serveur_depot/main.js       -> ../../../../../../obsidian-lancer-serveur-depot/main.js
-dépot-test/.../.obsidian/plugins/lancer_serveur_depot/manifest.json -> ../../../../../../obsidian-lancer-serveur-depot/manifest.json
+dépot-test/.../.obsidian/plugins/lancer-serveur-depot/main.js            -> ../../../../../../obsidian-lancer-serveur-depot/main.js
+dépot-test/.../.obsidian/plugins/lancer-serveur-depot/correctionView.js  -> ../../../../../../obsidian-lancer-serveur-depot/correctionView.js
+dépot-test/.../.obsidian/plugins/lancer-serveur-depot/manifest.json       -> ../../../../../../obsidian-lancer-serveur-depot/manifest.json
 ```
 
 Éditer `main.js` ici (ou via le vault de test, c'est le même fichier), puis
@@ -77,6 +98,7 @@ Le haut de `main.js` fixe des chemins absolus :
 const SERVEUR_PY       = "/home/ravard/workspace/cours/transfert_fichier/serveur.py";
 const CONFIG_COURS_DIR = "/home/ravard/workspace/cours/transfert_fichier/config/cours";
 const EXPOSE_DIR_PY    = "/home/ravard/workspace/cours/transfert_fichier/expose_dir.py";
+const CORRECTOR_CLI_PY = "/home/ravard/workspace/cours/transfert_fichier/corrector_cli.py";
 ```
 
 Tous les vaults qui reçoivent ce `main.js` via BRAT doivent donc tourner sur une

@@ -4,9 +4,9 @@
 # propose/applique la mise à jour (voir README.md pour la mise en place
 # initiale de BRAT sur chaque vault).
 #
-# Ce plugin n'a PAS d'étape de build : main.js est écrit à la main et est
-# à la fois la source et l'artefact livré. Il suffit donc de committer
-# main.js, de bumper la version, puis de lancer ce script.
+# Ce plugin n'a PAS d'étape de build : main.js et correctionView.js sont
+# écrits à la main et sont à la fois la source et l'artefact livré. Il suffit
+# donc de committer ces fichiers, de bumper la version, puis de lancer ce script.
 #
 # Convention obligatoire (BRAT et le système de mise à jour d'Obsidian s'y
 # fient) : le tag git doit être EXACTEMENT égal au champ "version" de
@@ -38,17 +38,18 @@ git tag "$VERSION"
 git push origin main "$VERSION"
 
 if command -v gh >/dev/null 2>&1; then
-  gh release create "$VERSION" main.js manifest.json \
+  gh release create "$VERSION" main.js correctionView.js manifest.json \
     --title "$VERSION" \
     --notes "Voir le journal des commits pour le détail des changements."
-  echo "Release GitHub $VERSION créée avec main.js/manifest.json en pièces jointes."
+  echo "Release GitHub $VERSION créée avec main.js/correctionView.js/manifest.json en pièces jointes."
 else
   cat <<EOF
 
 'gh' (GitHub CLI) n'est pas installé — termine la release à la main :
   1. $REPO_URL/releases/new?tag=$VERSION
-  2. Joins ces 2 fichiers en pièces jointes de la release (PAS le zip de code source) :
+  2. Joins ces 3 fichiers en pièces jointes de la release (PAS le zip de code source) :
        $(pwd)/main.js
+       $(pwd)/correctionView.js
        $(pwd)/manifest.json
   3. Publie la release.
 

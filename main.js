@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { CorrectionView, VIEW_TYPE_CORRECTION, lancerCorrectionJson } = require("./correctionView.js");
 
 
 // ==== À ADAPTER À TON ENVIRONNEMENT ====
@@ -13,6 +14,7 @@ const LOG_PATH = path.join(os.homedir(), "serveur.log"); // stdout/stderr de ser
 const EXPOSE_DIR_PY = "/home/ravard/workspace/cours/transfert_fichier/expose_dir.py";
 const EXPOSE_DIR_PORT = 8000; // port d'expose_dir.py (serveur.py utilise le 80, pas de conflit)
 const EXPOSE_LOG_PATH = path.join(os.homedir(), "expose_dir.log"); // stdout/stderr d'expose_dir.py
+const CORRECTOR_CLI_PY = "/home/ravard/workspace/cours/transfert_fichier/corrector_cli.py";
 // ========================================
 
 // Racine du projet : dossier de serveur.py. C'est le BASE_DIR de depot.py, sur
@@ -208,6 +210,30 @@ class ChoixCoursModal extends SuggestModal {
 
   onChooseSuggestion(id) {
     this.onChoose(id);
+  }
+}
+
+// Choix du "type" de document à corriger (ex. "Contrôle"), parmi les types
+// trouvés sur les fiches a_noter du cours concerné (voir demarrerCorrection).
+class ChoixTypeModal extends SuggestModal {
+  constructor(app, types, onChoose) {
+    super(app);
+    this.types = types;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Type de document à corriger…");
+  }
+
+  getSuggestions(query) {
+    const q = query.toLowerCase();
+    return this.types.filter((t) => t.toLowerCase().includes(q));
+  }
+
+  renderSuggestion(type, el) {
+    el.createEl("div", { text: type });
+  }
+
+  onChooseSuggestion(type) {
+    this.onChoose(type);
   }
 }
 
@@ -412,6 +438,14 @@ module.exports = class LancerServeurPlugin extends Plugin {
     this.exposeDir = null;
     this.exposeStatusBarEl = null;
 
+    // Session de correction en cours (indépendante de this.session, qui régit
+    // le serveur de dépôt) : { cours, originalPdf, profPdf }. originalPdf/
+    // profPdf valent null tant que le rôle correspondant n'a pas été choisi.
+    // Réinitialisée une fois la correction lancée (voir demarrerCorrection).
+    this.correction = null;
+
+    this.registerView(VIEW_TYPE_CORRECTION, (leaf) => new CorrectionView(leaf));
+
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (file instanceof TFolder) {
@@ -444,6 +478,21 @@ module.exports = class LancerServeurPlugin extends Plugin {
               .setTitle("Serveur de dépôt · ce PDF comme support de cours")
               .setIcon("book-open")
               .onClick(() => this.definirRole(file, "supportCours"));
+          });
+        }
+        // Correction automatique de devoirs (corrector.py) : PDF exclusif.
+        if (ext === "pdf") {
+          menu.addItem((item) => {
+            item
+              .setTitle("Corriger un devoir · ce PDF comme document de séance")
+              .setIcon("file-check")
+              .onClick(() => this.definirRoleCorrection(file, "originalPdf"));
+          });
+          menu.addItem((item) => {
+            item
+              .setTitle("Corriger un devoir · ce PDF comme corrigé professeur")
+              .setIcon("file-check-2")
+              .onClick(() => this.definirRoleCorrection(file, "profPdf"));
           });
         }
         if (ext === "md") {
@@ -627,6 +676,196 @@ module.exports = class LancerServeurPlugin extends Plugin {
     // (voir is_qcm_mode dans depot.py). fullscreen redevient donc sans objet.
     this.session = { ...base, qcm: null, fullscreen: false, [role]: cheminAbsolu };
     this.lancerServeur();
+  }
+
+  // Affecte le fichier `file` au rôle demandé pour la correction automatique
+  // ("originalPdf" = document de séance, "profPdf" = corrigé professeur), avec
+  // la même règle de résolution du cours par CLASSE_DIR que definirRole, mais
+  // dans un état totalement indépendant de this.session (pas de lancement de
+  // serveur ici). Dès que les deux rôles sont renseignés, lance la correction.
+  definirRoleCorrection(file, role) {
+    const basePath = this.app.vault.adapter.getBasePath();
+    const cheminAbsolu = path.resolve(basePath, file.path);
+
+    let configs;
+    try {
+      configs = chargerConfigsCours();
+    } catch (e) {
+      new Notice("Impossible de lire " + CONFIG_COURS_DIR + " : " + e.message);
+      return;
+    }
+    if (configs.length === 0) {
+      new Notice("Aucun fichier de config trouvé dans " + CONFIG_COURS_DIR);
+      return;
+    }
+
+    if (this.correction) {
+      const config = configs.find((c) => c.identifiant === this.correction.cours);
+      if (!config || !config.classeDir || !cheminEstDans(config.classeDir, cheminAbsolu)) {
+        new MessageModal(this.app, "Document hors du cours actif", [
+          `Cours actif pour cette correction : « ${this.correction.cours} ». Pour changer de cours, relance la correction depuis un autre PDF.`,
+          "Document sélectionné :",
+          cheminAbsolu,
+          config && config.classeDir
+            ? "Il n'est pas situé dans son CLASSE_DIR (" + config.classeDir + ")."
+            : "Or ce cours n'a pas de CLASSE_DIR exploitable.",
+        ]).open();
+        return;
+      }
+      this.appliquerRoleCorrection(this.correction.cours, role, cheminAbsolu);
+      return;
+    }
+
+    const identifiants = configs
+      .filter((c) => c.classeDir && cheminEstDans(c.classeDir, cheminAbsolu))
+      .map((c) => c.identifiant);
+
+    if (identifiants.length === 0) {
+      new MessageModal(this.app, "Aucune configuration compatible", [
+        "Le document sélectionné :",
+        cheminAbsolu,
+        "n'est situé dans le CLASSE_DIR d'aucune configuration de " + CONFIG_COURS_DIR + ".",
+      ]).open();
+      return;
+    }
+
+    if (identifiants.length === 1) {
+      this.appliquerRoleCorrection(identifiants[0], role, cheminAbsolu);
+    } else {
+      new ChoixCoursModal(this.app, identifiants, (identifiant) => {
+        this.appliquerRoleCorrection(identifiant, role, cheminAbsolu);
+      }).open();
+    }
+  }
+
+  // Construit/complète this.correction et, dès que les deux PDF sont
+  // renseignés, lance demarrerCorrection().
+  appliquerRoleCorrection(cours, role, cheminAbsolu) {
+    const base =
+      this.correction && this.correction.cours === cours
+        ? this.correction
+        : { cours, originalPdf: null, profPdf: null };
+    this.correction = { ...base, [role]: cheminAbsolu };
+
+    if (this.correction.originalPdf && this.correction.profPdf) {
+      this.demarrerCorrection();
+    } else {
+      new Notice(
+        `« ${role === "originalPdf" ? "document de séance" : "corrigé professeur"} » défini — ` +
+          "choisis maintenant l'autre PDF pour lancer la correction."
+      );
+    }
+  }
+
+  // Recherche, parmi les fiches de dépôt du vault, celles à corriger (a_noter
+  // === true, même cours que this.correction), fait choisir un "type" à
+  // l'enseignant, puis lance corrector_cli.py sur les copies correspondantes
+  // et ouvre la vue de résultats. Réinitialise this.correction à la fin (ou en
+  // cas d'abandon), pour permettre d'enchaîner une nouvelle correction.
+  demarrerCorrection() {
+    const { cours, originalPdf, profPdf } = this.correction;
+
+    const fichesANoter = this.app.vault.getMarkdownFiles().filter((f) => {
+      const fm = this.app.metadataCache.getFileCache(f)?.frontmatter;
+      return fm && fm.a_noter === true && fm.cours === cours;
+    });
+
+    if (fichesANoter.length === 0) {
+      new MessageModal(this.app, "Aucune fiche à corriger", [
+        `Aucune fiche de dépôt avec "a_noter: true" trouvée pour le cours « ${cours} ».`,
+      ]).open();
+      this.correction = null;
+      return;
+    }
+
+    const types = [...new Set(fichesANoter.map((f) => this.app.metadataCache.getFileCache(f).frontmatter.type))];
+
+    const poursuivre = (type) => this.lancerCorrectionPourType(cours, type, fichesANoter, originalPdf, profPdf);
+
+    if (types.length === 1) {
+      poursuivre(types[0]);
+    } else {
+      new ChoixTypeModal(this.app, types, poursuivre).open();
+    }
+  }
+
+  // Filtre les fiches sur le type choisi, résout le PDF associé à chacune,
+  // puis lance corrector_cli.py et ouvre la vue de résultats.
+  lancerCorrectionPourType(cours, type, fichesANoter, originalPdf, profPdf) {
+    const basePath = this.app.vault.adapter.getBasePath();
+    const entrees = [];
+    const introuvables = [];
+
+    for (const fiche of fichesANoter) {
+      const fm = this.app.metadataCache.getFileCache(fiche).frontmatter;
+      if (fm.type !== type) continue;
+      // Fiche et PDF partagent le même dossier (voir create_depot_note dans
+      // obsidian.py) ; fiche.parent.path vaut "" pour la racine du vault.
+      const pdfPath = fiche.parent.path ? fiche.parent.path + "/" + fm.fichier : fm.fichier;
+      const pdfFile = this.app.vault.getAbstractFileByPath(pdfPath);
+      if (!(pdfFile instanceof TFile)) {
+        introuvables.push(fm.fichier);
+        continue;
+      }
+      entrees.push({
+        id: fiche.path,
+        ficheFile: fiche,
+        eleve: fm.eleve || fiche.basename,
+        bareme: typeof fm.bareme === "number" ? fm.bareme : 20,
+        pdfAbsolu: path.resolve(basePath, pdfFile.path),
+      });
+    }
+
+    this.correction = null; // la correction démarre : libère le menu contextuel pour la suivante
+
+    if (introuvables.length > 0) {
+      new Notice(`PDF introuvable pour ${introuvables.length} fiche(s), ignorée(s) : ${introuvables.join(", ")}`);
+    }
+    if (entrees.length === 0) {
+      new MessageModal(this.app, "Aucune copie à corriger", [
+        `Aucune copie exploitable pour le type « ${type} » (cours « ${cours} »).`,
+      ]).open();
+      return;
+    }
+
+    const requete = {
+      original: originalPdf,
+      prof: profPdf,
+      eleves: entrees.map((e) => ({ id: e.id, pdf: e.pdfAbsolu })),
+    };
+    const cheminRequete = path.join(os.tmpdir(), `correction-${Date.now()}.json`);
+    try {
+      fs.writeFileSync(cheminRequete, JSON.stringify(requete), "utf8");
+    } catch (e) {
+      new Notice("Impossible d'écrire la requête de correction : " + e.message);
+      return;
+    }
+
+    (async () => {
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({ type: VIEW_TYPE_CORRECTION, active: true });
+      this.app.workspace.revealLeaf(leaf);
+      const view = leaf.view;
+      view.initialiser(entrees);
+
+      lancerCorrectionJson({
+        pythonBin: PYTHON_BIN,
+        scriptArgs: [CORRECTOR_CLI_PY, cheminRequete],
+        onLigne: (ligne) => view.appliquerResultat(ligne),
+        onFin: (code, stderr) => {
+          view.terminer();
+          fs.unlink(cheminRequete, () => {});
+          if (code) {
+            new LogModal(
+              this.app,
+              `La correction a échoué (code ${code})`,
+              stderr,
+              "(sortie du script corrector_cli.py, aucun fichier de log)"
+            ).open();
+          }
+        },
+      });
+    })();
   }
 
   // (Re)lance serveur.py avec la session courante : --cours toujours, plus

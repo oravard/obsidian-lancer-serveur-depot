@@ -1,9 +1,9 @@
 {
   "id": "lancer-serveur-depot",
   "name": "Lancer serveur (dépôt)",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "minAppVersion": "1.0.0",
-  "description": "Ajoute une entrée dans le menu contextuel des fichiers PDF pour lancer le serveur de dépôt avec ce PDF comme document de séance.",
+  "description": "Ajoute des entrées dans le menu contextuel des fichiers PDF pour lancer le serveur de dépôt et corriger automatiquement des devoirs (corrector.py).",
   "author": "Olivier Ravard",
   "isDesktopOnly": true
 }
