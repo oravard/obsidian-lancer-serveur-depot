@@ -485,9 +485,14 @@ class CorrectionView extends ItemView {
   }
 
   // Pré-remplit la liste des copies attendues avant le lancement du script,
-  // pour afficher tout de suite un état "en attente" par élève.
-  initialiser(entrees) {
-    this.resultats = entrees.map((e) => ({
+  // triée par ordre alphabétique d'élève, pour afficher tout de suite un état
+  // "en attente" par élève. Chaque section démarre repliée (voir renderEleve) :
+  // seuls apparaissent le nom, l'état et — une fois corrigée — la note finale.
+  initialiser(entrees, meta) {
+    const tries = [...entrees].sort((a, b) =>
+      (a.eleve || "").localeCompare(b.eleve || "", "fr", { sensitivity: "base" })
+    );
+    this.resultats = tries.map((e) => ({
       id: e.id,
       ficheFile: e.ficheFile,
       eleve: e.eleve,
@@ -496,7 +501,12 @@ class CorrectionView extends ItemView {
       statut: "en_attente",
       erreur: null,
       valide: false,
+      plie: true,
     }));
+    // Conservés pour le frontmatter/nom de fichier du rapport de correction
+    // (voir genererRapport), pas utilisés pour l'affichage.
+    this.cours = meta && meta.cours;
+    this.type = meta && meta.type;
     this.enCours = true;
     this.render();
   }
@@ -536,9 +546,14 @@ class CorrectionView extends ItemView {
     const container = this.contentEl;
     container.empty();
     container.addClass("correction-devoirs-view");
+    // Mise en page en colonne : la barre d'actions reste fixe en haut, seule
+    // la liste des élèves défile — inutile de remonter en haut pour valider.
+    container.style.cssText = "display:flex; flex-direction:column; height:100%;";
 
     const barre = container.createDiv({ cls: "correction-barre-actions" });
-    barre.style.cssText = "display:flex; align-items:center; gap:1em; margin-bottom:1em;";
+    barre.style.cssText =
+      "display:flex; align-items:center; gap:1em; padding:1em; flex:0 0 auto; " +
+      "border-bottom:1px solid var(--background-modifier-border);";
 
     const nbOk = this.resultats.filter((r) => r.statut === "ok").length;
     const validerBtn = barre.createEl("button", { cls: "mod-cta", text: "Valider tout" });
@@ -550,31 +565,60 @@ class CorrectionView extends ItemView {
       : `${nbOk} copie(s) corrigée(s) sur ${this.resultats.length}`;
     barre.createSpan({ text: statutTexte });
 
-    for (const r of this.resultats) this.renderEleve(container, r);
+    const liste = container.createDiv({ cls: "correction-liste" });
+    liste.style.cssText = "flex:1 1 auto; overflow-y:auto; padding:1em;";
+
+    for (const r of this.resultats) this.renderEleve(liste, r);
   }
 
   renderEleve(container, r) {
     const section = container.createDiv({ cls: "correction-eleve" });
-    section.style.cssText = "margin-bottom:1.5em; padding-bottom:1em; border-bottom:1px solid var(--background-modifier-border);";
+    section.style.cssText = "margin-bottom:1em; padding-bottom:1em; border-bottom:1px solid var(--background-modifier-border);";
 
-    const titre = section.createEl("h4");
-    titre.createSpan({ text: r.eleve });
+    // En-tête toujours visible : chevron + nom + résumé (état ou note finale)
+    // + badge de validation. Cliquer dessus plie/déplie le détail ci-dessous.
+    const header = section.createDiv({ cls: "correction-eleve-header" });
+    header.style.cssText = "display:flex; align-items:center; gap:.5em; cursor:pointer;";
+    header.addEventListener("click", () => {
+      r.plie = !r.plie;
+      this.render();
+    });
+
+    const chevron = header.createSpan({ text: r.plie ? "▶" : "▼" });
+    chevron.style.cssText = "width:1em; display:inline-block; opacity:.7;";
+
+    const nom = header.createSpan({ text: r.eleve });
+    nom.style.fontWeight = "600";
+
+    const resume = header.createSpan();
+    resume.style.cssText = "opacity:.8;";
+    if (r.statut === "en_attente") {
+      resume.setText("En attente…");
+    } else if (r.statut === "erreur") {
+      resume.setText("Erreur");
+      resume.style.color = "var(--text-error)";
+    } else {
+      resume.setText(`Note : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}`);
+    }
+
     if (r.valide) {
-      const badge = titre.createSpan({ text: " ✓ validé" });
+      const badge = header.createSpan({ text: "✓ validé" });
       badge.style.color = "var(--text-success)";
     }
 
-    if (r.statut === "en_attente") {
-      section.createEl("p", { text: "En attente…" }).style.opacity = "0.7";
-      return;
-    }
+    if (r.plie) return;
+
+    if (r.statut === "en_attente") return; // rien de plus à montrer que le résumé
     if (r.statut === "erreur") {
       const p = section.createEl("p", { text: "Erreur : " + r.erreur });
-      p.style.color = "var(--text-error)";
+      p.style.cssText = "color:var(--text-error); margin-left:1.5em;";
       return;
     }
 
-    const table = section.createEl("table");
+    const detail = section.createDiv();
+    detail.style.marginLeft = "1.5em";
+
+    const table = detail.createEl("table");
     table.style.cssText = "width:100%; border-collapse:collapse;";
     const thead = table.createEl("thead");
     const trHead = thead.createEl("tr");
@@ -584,10 +628,12 @@ class CorrectionView extends ItemView {
     }
     const tbody = table.createEl("tbody");
 
-    const noteFinaleEl = section.createEl("p");
+    const noteFinaleEl = detail.createEl("p");
     noteFinaleEl.style.cssText = "font-weight:600; margin-top:.5em;";
     const majNoteFinale = () => {
-      noteFinaleEl.setText(`Note finale : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}`);
+      const note = this.noteFinale(r).toFixed(2);
+      noteFinaleEl.setText(`Note finale : ${note} / ${r.bareme}`);
+      resume.setText(`Note : ${note} / ${r.bareme}`); // garde le résumé de l'en-tête synchronisé pendant l'édition
     };
 
     for (const q of r.questions) {
@@ -643,6 +689,91 @@ class CorrectionView extends ItemView {
     }
     new Notice(`${compte} note(s) enregistrée(s).`);
     this.render();
+    await this.genererRapport();
+  }
+
+  // Dossier de dépôt du cours (parent des sous-dossiers <eleve>/), déduit de la
+  // première fiche disponible plutôt que reparsé depuis config/cours/*.json :
+  // toutes les fiches d'une même correction partagent le même dossier parent
+  // (<DEPOT_ROOT>/<eleve>/<fiche>.md, voir create_depot_note dans obsidian.py).
+  dossierDepot() {
+    const premiere = this.resultats.find((r) => r.ficheFile);
+    return premiere ? premiere.ficheFile.parent.parent : null;
+  }
+
+  // Échappe une valeur pour une cellule de tableau markdown : pipe littéral et
+  // retours à la ligne (interdits dans une cellule) transformés en <br>.
+  echapperCellule(texte) {
+    return String(texte ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+  }
+
+  // Contenu markdown du rapport : mêmes informations que l'onglet (question /
+  // réponse / note / justification par élève, note finale), mais en texte figé
+  // — pas de champ modifiable, contrairement au tableau interactif de la vue.
+  construireRapport() {
+    const maintenant = new Date();
+    const nbOk = this.resultats.filter((r) => r.statut === "ok").length;
+    const nbErreurs = this.resultats.filter((r) => r.statut === "erreur").length;
+
+    const lignes = ["---", "tags:", "  - rapport-correction"];
+    if (this.type) lignes.push(`type: ${JSON.stringify(this.type)}`);
+    if (this.cours) lignes.push(`cours: ${JSON.stringify(this.cours)}`);
+    lignes.push(`date: ${JSON.stringify(maintenant.toISOString())}`);
+    lignes.push(`nb_eleves: ${this.resultats.length}`);
+    lignes.push(`nb_corriges: ${nbOk}`);
+    lignes.push(`nb_erreurs: ${nbErreurs}`);
+    lignes.push("---", "");
+
+    const titre = ["# Rapport de correction", this.type, this.cours ? `(${this.cours})` : null]
+      .filter(Boolean)
+      .join(" ");
+    lignes.push(titre, "");
+
+    for (const r of this.resultats) {
+      lignes.push(`## ${r.eleve}`, "");
+      if (r.statut === "erreur") {
+        lignes.push(`Erreur : ${r.erreur}`, "");
+        continue;
+      }
+      if (r.statut !== "ok") {
+        lignes.push("Non traité.", "");
+        continue;
+      }
+      lignes.push(`**Note finale : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}**`, "");
+      lignes.push("| Question | Réponse élève | Note | Justification |");
+      lignes.push("| --- | --- | --- | --- |");
+      for (const q of r.questions) {
+        lignes.push(
+          `| ${this.echapperCellule(q.Q)} | ${this.echapperCellule(q.R)} | ${q.note} | ${this.echapperCellule(q.justification)} |`
+        );
+      }
+      lignes.push("");
+    }
+
+    return lignes.join("\n");
+  }
+
+  // Écrit le rapport dans le dossier de dépôt du cours et l'ouvre dans un
+  // nouvel onglet. N'échoue jamais bruyamment : un souci d'écriture affiche
+  // juste une Notice (les notes elles-mêmes sont déjà enregistrées à ce stade).
+  async genererRapport() {
+    const dossier = this.dossierDepot();
+    if (!dossier) return;
+
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const horodatage = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const typeSafe = (this.type || "correction").replace(/[\\/:*?"<>|]/g, "_");
+    const nomFichier = `Rapport de correction - ${typeSafe} - ${horodatage}.md`;
+    const cheminFichier = dossier.path ? `${dossier.path}/${nomFichier}` : nomFichier;
+
+    try {
+      const fichier = await this.app.vault.create(cheminFichier, this.construireRapport());
+      new Notice("Rapport de correction créé : " + fichier.path);
+      await this.app.workspace.getLeaf("tab").openFile(fichier);
+    } catch (e) {
+      new Notice("Impossible de créer le rapport de correction : " + e.message);
+    }
   }
 }
 
@@ -1069,7 +1200,7 @@ module.exports = class LancerServeurPlugin extends Plugin {
       await leaf.setViewState({ type: VIEW_TYPE_CORRECTION, active: true });
       this.app.workspace.revealLeaf(leaf);
       const view = leaf.view;
-      view.initialiser(entrees);
+      view.initialiser(entrees, { cours, type });
 
       lancerCorrectionJson({
         pythonBin: PYTHON_BIN,
