@@ -538,6 +538,15 @@ class CorrectionView extends ItemView {
     return (r.bareme * somme) / r.questions.length;
   }
 
+  // Résumé d'une ligne, utilisé à la fois dans l'en-tête repliable de la vue
+  // et dans le <summary> du rapport de correction (voir construireRapport) :
+  // les deux doivent toujours afficher exactement la même chose.
+  resumeTexte(r) {
+    if (r.statut === "en_attente") return "En attente…";
+    if (r.statut === "erreur") return "Erreur";
+    return `Note : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}`;
+  }
+
   async onOpen() {
     this.render();
   }
@@ -592,14 +601,8 @@ class CorrectionView extends ItemView {
 
     const resume = header.createSpan();
     resume.style.cssText = "opacity:.8;";
-    if (r.statut === "en_attente") {
-      resume.setText("En attente…");
-    } else if (r.statut === "erreur") {
-      resume.setText("Erreur");
-      resume.style.color = "var(--text-error)";
-    } else {
-      resume.setText(`Note : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}`);
-    }
+    resume.setText(this.resumeTexte(r));
+    if (r.statut === "erreur") resume.style.color = "var(--text-error)";
 
     if (r.valide) {
       const badge = header.createSpan({ text: "✓ validé" });
@@ -631,9 +634,8 @@ class CorrectionView extends ItemView {
     const noteFinaleEl = detail.createEl("p");
     noteFinaleEl.style.cssText = "font-weight:600; margin-top:.5em;";
     const majNoteFinale = () => {
-      const note = this.noteFinale(r).toFixed(2);
-      noteFinaleEl.setText(`Note finale : ${note} / ${r.bareme}`);
-      resume.setText(`Note : ${note} / ${r.bareme}`); // garde le résumé de l'en-tête synchronisé pendant l'édition
+      noteFinaleEl.setText("Note finale : " + this.noteFinale(r).toFixed(2) + " / " + r.bareme);
+      resume.setText(this.resumeTexte(r)); // garde le résumé de l'en-tête synchronisé pendant l'édition
     };
 
     for (const q of r.questions) {
@@ -701,15 +703,31 @@ class CorrectionView extends ItemView {
     return premiere ? premiere.ficheFile.parent.parent : null;
   }
 
-  // Échappe une valeur pour une cellule de tableau markdown : pipe littéral et
-  // retours à la ligne (interdits dans une cellule) transformés en <br>.
+  // Échappe une valeur pour une cellule de tableau markdown : caractères HTML
+  // (le texte vient du PDF/LLM, pas de garantie qu'il ne ressemble jamais à une
+  // balise), pipe littéral, et retours à la ligne (interdits dans une cellule,
+  // transformés en <br> — volontairement laissé tel quel, ajouté après coup).
   echapperCellule(texte) {
-    return String(texte ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+    return this.echapperHtml(texte)
+      .replace(/\|/g, "\\|")
+      .replace(/\r?\n/g, "<br>");
   }
 
-  // Contenu markdown du rapport : mêmes informations que l'onglet (question /
-  // réponse / note / justification par élève, note finale), mais en texte figé
-  // — pas de champ modifiable, contrairement au tableau interactif de la vue.
+  // Échappe une valeur destinée à un contexte HTML brut (ex. <summary>), pour
+  // qu'un nom d'élève ou un message d'erreur contenant "<"/">"/"&" ne casse pas
+  // la structure de la note ou ne soit pas interprété comme une balise.
+  echapperHtml(texte) {
+    return String(texte ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Contenu markdown du rapport : mêmes informations et même présentation que
+  // l'onglet (arbre replié par défaut, nom + résumé/note finale toujours
+  // visibles, détail question/réponse/note/justification au dépli), via un
+  // callout Obsidian repliable (`> [!type]- titre`) plutôt qu'un <details> HTML
+  // brut : à l'usage, Obsidian ne réinterprète pas le markdown (tableaux
+  // compris) à l'intérieur d'un <details>, alors qu'un callout est prévu pour
+  // contenir du markdown riche. Pas de champ modifiable ici, contrairement au
+  // tableau interactif de la vue.
   construireRapport() {
     const maintenant = new Date();
     const nbOk = this.resultats.filter((r) => r.statut === "ok").length;
@@ -730,23 +748,29 @@ class CorrectionView extends ItemView {
     lignes.push(titre, "");
 
     for (const r of this.resultats) {
-      lignes.push(`## ${r.eleve}`, "");
+      const typeCallout = r.statut === "erreur" ? "failure" : r.statut === "ok" ? "success" : "note";
+      const titreCallout = `${this.echapperHtml(r.eleve)} — ${this.echapperHtml(this.resumeTexte(r))}`;
+      lignes.push(`> [!${typeCallout}]- ${titreCallout}`);
+
+      const corps = [];
       if (r.statut === "erreur") {
-        lignes.push(`Erreur : ${r.erreur}`, "");
-        continue;
+        corps.push(`Erreur : ${r.erreur}`);
+      } else if (r.statut !== "ok") {
+        corps.push("Non traité.");
+      } else {
+        corps.push("| Question | Réponse élève | Note | Justification |");
+        corps.push("| --- | --- | --- | --- |");
+        for (const q of r.questions) {
+          corps.push(
+            `| ${this.echapperCellule(q.Q)} | ${this.echapperCellule(q.R)} | ${q.note} | ${this.echapperCellule(q.justification)} |`
+          );
+        }
+        corps.push("", `**Note finale : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}**`);
       }
-      if (r.statut !== "ok") {
-        lignes.push("Non traité.", "");
-        continue;
-      }
-      lignes.push(`**Note finale : ${this.noteFinale(r).toFixed(2)} / ${r.bareme}**`, "");
-      lignes.push("| Question | Réponse élève | Note | Justification |");
-      lignes.push("| --- | --- | --- | --- |");
-      for (const q of r.questions) {
-        lignes.push(
-          `| ${this.echapperCellule(q.Q)} | ${this.echapperCellule(q.R)} | ${q.note} | ${this.echapperCellule(q.justification)} |`
-        );
-      }
+      // Chaque ligne du corps reste dans le callout via le préfixe "> " ; une
+      // ligne vide doit quand même porter le ">" seul, sinon elle sort du bloc.
+      for (const ligneCorps of corps) lignes.push(ligneCorps === "" ? ">" : `> ${ligneCorps}`);
+
       lignes.push("");
     }
 
