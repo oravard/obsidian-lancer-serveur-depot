@@ -470,6 +470,15 @@ class CorrectionView extends ItemView {
     // champ "id" renvoyé par corrector_cli.py (chemin vault-relatif de la fiche).
     this.resultats = [];
     this.enCours = true;
+    // Bascule d'affichage : "eleve" (un tableau Q/R/note/justification par
+    // élève) ou "question" (un tableau élève/réponse/note/justification par
+    // question, toutes copies confondues). Les deux modes lisent/modifient les
+    // mêmes objets question (r.questions[i]) : éditer une note dans un mode se
+    // reflète immédiatement dans l'autre.
+    this.mode = "eleve";
+    // État replié/déplié par question en mode "question" (indexé par position
+    // dans questions[]) ; absent d'une clé = replié par défaut.
+    this.questionPliee = {};
   }
 
   getViewType() {
@@ -569,6 +578,14 @@ class CorrectionView extends ItemView {
     validerBtn.disabled = this.enCours || nbOk === 0;
     validerBtn.addEventListener("click", () => void this.validerTout());
 
+    const modeBtn = barre.createEl("button", {
+      text: this.mode === "eleve" ? "Afficher par question" : "Afficher par élève",
+    });
+    modeBtn.addEventListener("click", () => {
+      this.mode = this.mode === "eleve" ? "question" : "eleve";
+      this.render();
+    });
+
     const statutTexte = this.enCours
       ? "Correction en cours…"
       : `${nbOk} copie(s) corrigée(s) sur ${this.resultats.length}`;
@@ -577,7 +594,11 @@ class CorrectionView extends ItemView {
     const liste = container.createDiv({ cls: "correction-liste" });
     liste.style.cssText = "flex:1 1 auto; overflow-y:auto; padding:1em;";
 
-    for (const r of this.resultats) this.renderEleve(liste, r);
+    if (this.mode === "eleve") {
+      for (const r of this.resultats) this.renderEleve(liste, r);
+    } else {
+      this.renderParQuestion(liste);
+    }
   }
 
   renderEleve(container, r) {
@@ -665,6 +686,94 @@ class CorrectionView extends ItemView {
     }
 
     majNoteFinale();
+  }
+
+  // Mode "par question" : une section repliable par question (même ordre que
+  // dans les copies, déduit de la première copie corrigée — toutes les copies
+  // partagent le même questionnaire), listant élève/réponse/note/justification
+  // pour cette question sur toutes les copies déjà corrigées.
+  renderParQuestion(container) {
+    const corriges = this.resultats.filter((r) => r.statut === "ok");
+    const nbErreurs = this.resultats.filter((r) => r.statut === "erreur").length;
+
+    if (nbErreurs > 0) {
+      const p = container.createEl("p", {
+        text: `${nbErreurs} copie(s) en erreur non affichée(s) dans cette vue (voir le mode « par élève »).`,
+      });
+      p.style.cssText = "opacity:.7; margin-bottom:1em;";
+    }
+
+    if (corriges.length === 0) {
+      container.createEl("p", { text: "Aucune copie corrigée pour l'instant." }).style.opacity = "0.7";
+      return;
+    }
+
+    const nbQuestions = corriges[0].questions.length;
+    for (let i = 0; i < nbQuestions; i++) this.renderQuestion(container, i, corriges);
+  }
+
+  renderQuestion(container, index, corriges) {
+    const section = container.createDiv({ cls: "correction-question" });
+    section.style.cssText = "margin-bottom:1em; padding-bottom:1em; border-bottom:1px solid var(--background-modifier-border);";
+
+    const plie = this.questionPliee[index] !== false;
+
+    const header = section.createDiv({ cls: "correction-question-header" });
+    header.style.cssText = "display:flex; align-items:flex-start; gap:.5em; cursor:pointer;";
+    header.addEventListener("click", () => {
+      this.questionPliee[index] = !plie;
+      this.render();
+    });
+
+    const chevron = header.createSpan({ text: plie ? "▶" : "▼" });
+    chevron.style.cssText = "width:1em; flex:0 0 auto; opacity:.7;";
+
+    const titre = header.createSpan({ text: `Question ${index + 1} — ${corriges[0].questions[index].Q}` });
+    titre.style.fontWeight = "600";
+
+    if (plie) return;
+
+    const detail = section.createDiv();
+    detail.style.marginLeft = "1.5em";
+
+    const table = detail.createEl("table");
+    table.style.cssText = "width:100%; border-collapse:collapse;";
+    const thead = table.createEl("thead");
+    const trHead = thead.createEl("tr");
+    for (const label of ["Élève", "Réponse", "Note", "Justification"]) {
+      const th = trHead.createEl("th", { text: label });
+      th.style.cssText = "text-align:left; padding:.3em .5em; border-bottom:1px solid var(--background-modifier-border);";
+    }
+    const tbody = table.createEl("tbody");
+
+    for (const r of corriges) {
+      const q = r.questions[index];
+      if (!q) continue;
+
+      const tr = tbody.createEl("tr");
+      const tdEleve = tr.createEl("td", { text: r.eleve });
+      tdEleve.style.cssText = "padding:.3em .5em; vertical-align:top; font-weight:600;";
+
+      const tdReponse = tr.createEl("td", { text: q.R });
+      tdReponse.style.cssText = "padding:.3em .5em; vertical-align:top;";
+
+      const tdNote = tr.createEl("td");
+      tdNote.style.cssText = "padding:.3em .5em; vertical-align:top;";
+      const input = tdNote.createEl("input", { type: "number" });
+      input.min = "0";
+      input.max = "1";
+      input.step = "0.5";
+      input.value = String(q.note);
+      input.style.width = "4em";
+      input.disabled = r.valide;
+      input.addEventListener("input", () => {
+        const v = parseFloat(input.value);
+        q.note = Number.isFinite(v) ? v : 0;
+      });
+
+      const tdJust = tr.createEl("td", { text: q.justification });
+      tdJust.style.cssText = "padding:.3em .5em; vertical-align:top; opacity:.85;";
+    }
   }
 
   async validerTout() {
