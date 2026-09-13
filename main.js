@@ -517,6 +517,10 @@ class CorrectionView extends ItemView {
     this.cours = meta && meta.cours;
     this.type = meta && meta.type;
     this.enCours = true;
+    // Poids w_i par question (indexé comme questions[]), tous à 1 par défaut
+    // (équivalent à une simple moyenne, comportement historique) ; complété
+    // dès que le nombre de questions est connu (voir assurerPoids).
+    this.poids = null;
     this.render();
   }
 
@@ -539,12 +543,31 @@ class CorrectionView extends ItemView {
     this.render();
   }
 
-  // Note finale = barème * (somme des notes par question) / nombre de questions.
-  // Recalculée à chaque édition, jamais renvoyée par le script Python.
+  // Garantit un poids pour chacune des nbQuestions premières questions (1 par
+  // défaut), sans écraser les poids déjà saisis par l'enseignant. Partagé par
+  // toutes les copies de la vue : le poids d'une question est le même pour
+  // tout le monde (voir renderPonderation).
+  assurerPoids(nbQuestions) {
+    if (!this.poids) this.poids = [];
+    while (this.poids.length < nbQuestions) this.poids.push(1);
+    return this.poids;
+  }
+
+  // Note finale = barème * (somme pondérée w_i·n_i) / (somme des poids w_i).
+  // Avec tous les poids à 1 (valeur par défaut), équivaut à la simple moyenne
+  // d'origine. Recalculée à chaque édition (note ou poids), jamais renvoyée
+  // par le script Python.
   noteFinale(r) {
     if (!r.questions || r.questions.length === 0) return 0;
-    const somme = r.questions.reduce((s, q) => s + Number(q.note), 0);
-    return (r.bareme * somme) / r.questions.length;
+    const poids = this.assurerPoids(r.questions.length);
+    let sommePonderee = 0;
+    let sommePoids = 0;
+    r.questions.forEach((q, i) => {
+      const w = poids[i];
+      sommePonderee += w * Number(q.note);
+      sommePoids += w;
+    });
+    return sommePoids > 0 ? (r.bareme * sommePonderee) / sommePoids : 0;
   }
 
   // Résumé d'une ligne, utilisé à la fois dans l'en-tête repliable de la vue
@@ -591,6 +614,10 @@ class CorrectionView extends ItemView {
       : `${nbOk} copie(s) corrigée(s) sur ${this.resultats.length}`;
     barre.createSpan({ text: statutTexte });
 
+    const ponderation = container.createDiv({ cls: "correction-ponderation-bloc" });
+    ponderation.style.cssText = "flex:0 0 auto; max-height:30vh; overflow-y:auto;";
+    this.renderPonderation(ponderation);
+
     const liste = container.createDiv({ cls: "correction-liste" });
     liste.style.cssText = "flex:1 1 auto; overflow-y:auto; padding:1em;";
 
@@ -598,6 +625,49 @@ class CorrectionView extends ItemView {
       for (const r of this.resultats) this.renderEleve(liste, r);
     } else {
       this.renderParQuestion(liste);
+    }
+  }
+
+  // Liste des questions avec leur poids w_i (éditable), utilisés par
+  // noteFinale pour toutes les copies. Reste vide tant qu'aucune copie n'est
+  // encore corrigée (nombre/texte des questions pas encore connu). Le
+  // recalcul se fait sur "change" (pas "input") pour ne pas perdre le focus du
+  // champ à chaque frappe, un render() complet étant nécessaire pour
+  // répercuter le nouveau poids sur toutes les notes affichées.
+  renderPonderation(container) {
+    const corrige = this.resultats.find((r) => r.statut === "ok");
+    if (!corrige) return;
+
+    const nbQuestions = corrige.questions.length;
+    const poids = this.assurerPoids(nbQuestions);
+
+    container.style.cssText += "padding:0 1em 1em; border-bottom:1px solid var(--background-modifier-border);";
+    const titre = container.createEl("p", {
+      text: "Pondération des questions (poids par défaut : 1 — n'affecte pas la somme, seulement sa répartition)",
+    });
+    titre.style.cssText = "font-weight:600; margin:.75em 0 .5em;";
+
+    const table = container.createEl("table");
+    table.style.cssText = "width:100%; border-collapse:collapse;";
+    const tbody = table.createEl("tbody");
+
+    for (let i = 0; i < nbQuestions; i++) {
+      const tr = tbody.createEl("tr");
+      const tdQ = tr.createEl("td", { text: `Q${i + 1} — ${corrige.questions[i].Q}` });
+      tdQ.style.cssText = "padding:.2em .5em; vertical-align:top;";
+
+      const tdW = tr.createEl("td");
+      tdW.style.cssText = "padding:.2em .5em; vertical-align:top; white-space:nowrap;";
+      const input = tdW.createEl("input", { type: "number" });
+      input.min = "0";
+      input.step = "0.5";
+      input.value = String(poids[i]);
+      input.style.width = "4.5em";
+      input.addEventListener("change", () => {
+        const v = parseFloat(input.value);
+        poids[i] = Number.isFinite(v) && v >= 0 ? v : 0;
+        this.render();
+      });
     }
   }
 
