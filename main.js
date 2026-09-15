@@ -15,6 +15,10 @@ const EXPOSE_DIR_PORT = 8000; // port d'expose_dir.py (serveur.py utilise le 80,
 const EXPOSE_LOG_PATH = path.join(os.homedir(), "expose_dir.log"); // stdout/stderr d'expose_dir.py
 const CORRECTOR_CLI_PY = "/home/ravard/workspace/cours/transfert_fichier/corrector_cli.py";
 const EVALUATION_PROJET_PY = "/home/ravard/workspace/cours/transfert_fichier/evaluation_projet.py";
+// evaluation_projet.py n'est aujourd'hui écrit que pour évaluer un document de
+// spécifications (même limite que TYPE_DOCUMENT_EVALUATION_IA dans obsidian.py,
+// côté serveur) : à élargir le jour où ce module saura traiter d'autres types.
+const TYPE_DOCUMENT_EVALUATION_IA = "Spécifications";
 // ========================================
 
 // Racine du projet : dossier de serveur.py. C'est le BASE_DIR de depot.py, sur
@@ -1087,11 +1091,18 @@ module.exports = class LancerServeurPlugin extends Plugin {
           });
 
           // Fiche de dépôt (create_depot_note dans obsidian.py) d'un cours
-          // "projet" : permet de (re)lancer manuellement l'évaluation IA des
-          // spécifications (evaluation_projet.py), en particulier pour les
-          // dépôts faits avant la mise en place du déclenchement automatique.
+          // "projet", de type TYPE_DOCUMENT_EVALUATION_IA : permet de (re)lancer
+          // manuellement l'évaluation IA des spécifications (evaluation_projet.py),
+          // en particulier pour les dépôts faits avant la mise en place du
+          // déclenchement automatique.
           const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-          if (fm && fm.eleve && fm.fichier && estCoursProjet(fm.cours)) {
+          if (
+            fm &&
+            fm.eleve &&
+            fm.fichier &&
+            fm.type === TYPE_DOCUMENT_EVALUATION_IA &&
+            estCoursProjet(fm.cours)
+          ) {
             menu.addItem((item) => {
               item
                 .setTitle("Évaluer les spécifications (IA)")
