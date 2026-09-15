@@ -32,18 +32,67 @@ VERSION=$(node -p "require('./manifest.json').version")
 echo "Version à publier (manifest.json) : $VERSION"
 
 if git rev-parse "$VERSION" >/dev/null 2>&1; then
-  echo "Erreur : le tag $VERSION existe déjà. As-tu oublié de bumper la version dans manifest.json ?" >&2
-  exit 1
+  if [ "$(git rev-parse "$VERSION")" = "$(git rev-parse HEAD)" ]; then
+    # Tag déjà présent sur ce commit exact : probablement la reprise d'un run
+    # précédent dont seule la publication GitHub avait échoué (voir
+    # publier_release) — on saute la (re)création du tag, pas d'erreur.
+    echo "Tag $VERSION déjà présent sur ce commit : reprise directe à la publication GitHub."
+  else
+    echo "Erreur : le tag $VERSION existe déjà sur un autre commit. As-tu oublié de bumper la version dans manifest.json ?" >&2
+    exit 1
+  fi
+else
+  git tag "$VERSION"
+  git push origin main "$VERSION"
 fi
 
-git tag "$VERSION"
-git push origin main "$VERSION"
+# Publie (ou complète) la release GitHub d'une version, avec repli en cas
+# d'erreur transitoire de l'API GitHub. Vécu deux fois en pratique (1.1.4,
+# 1.1.5) : `gh release create` échoue en cours de route (HTTP 500/502 côté
+# GitHub) mais laisse quand même un brouillon SANS pièce jointe. Sans ce
+# rattrapage, le tag est poussé mais BRAT échoue ("pas de fichier
+# manifest.json") tant que quelqu'un ne complète pas la release à la main.
+publier_release() {
+  local version="$1" tentative etat
+
+  for tentative in 1 2 3; do
+    if ! gh release view "$version" >/dev/null 2>&1; then
+      if gh release create "$version" main.js manifest.json \
+          --title "$version" \
+          --notes "Voir le journal des commits pour le détail des changements."; then
+        echo "Release GitHub $version créée avec main.js/manifest.json en pièces jointes."
+        return 0
+      fi
+      echo "Tentative $tentative : échec de 'gh release create' (souvent transitoire côté GitHub)." >&2
+    fi
+
+    # Une release existe (à l'instant, ou laissée incomplète par un run
+    # précédent) : on s'assure qu'elle porte bien les deux fichiers et qu'elle
+    # est publiée (pas en brouillon), sans échouer si elle l'était déjà.
+    if gh release view "$version" >/dev/null 2>&1; then
+      gh release upload "$version" main.js manifest.json --clobber >/dev/null 2>&1 || true
+      gh release edit "$version" --draft=false >/dev/null 2>&1 || true
+
+      etat=$(gh release view "$version" --json isDraft,assets \
+        --jq '(.isDraft|tostring) + "," + ([.assets[].name] | sort | join(":"))' 2>/dev/null || echo "?")
+      if [ "$etat" = "false,main.js:manifest.json" ]; then
+        echo "Release GitHub $version publiée avec main.js/manifest.json en pièces jointes."
+        return 0
+      fi
+      echo "Tentative $tentative : release $version encore incomplète (état : $etat)." >&2
+    fi
+
+    sleep 3
+  done
+
+  echo "Erreur : impossible de finaliser la release GitHub $version après plusieurs tentatives." >&2
+  echo "Le tag est déjà poussé : relance ./release.sh (il complétera la release existante)," >&2
+  echo "ou termine à la main : $REPO_URL/releases/tag/$version" >&2
+  exit 1
+}
 
 if command -v gh >/dev/null 2>&1; then
-  gh release create "$VERSION" main.js manifest.json \
-    --title "$VERSION" \
-    --notes "Voir le journal des commits pour le détail des changements."
-  echo "Release GitHub $VERSION créée avec main.js/manifest.json en pièces jointes."
+  publier_release "$VERSION"
 else
   cat <<EOF
 
