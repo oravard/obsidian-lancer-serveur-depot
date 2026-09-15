@@ -14,6 +14,7 @@ const EXPOSE_DIR_PY = "/home/ravard/workspace/cours/transfert_fichier/expose_dir
 const EXPOSE_DIR_PORT = 8000; // port d'expose_dir.py (serveur.py utilise le 80, pas de conflit)
 const EXPOSE_LOG_PATH = path.join(os.homedir(), "expose_dir.log"); // stdout/stderr d'expose_dir.py
 const CORRECTOR_CLI_PY = "/home/ravard/workspace/cours/transfert_fichier/corrector_cli.py";
+const EVALUATION_PROJET_PY = "/home/ravard/workspace/cours/transfert_fichier/evaluation_projet.py";
 // ========================================
 
 // Racine du projet : dossier de serveur.py. C'est le BASE_DIR de depot.py, sur
@@ -50,6 +51,31 @@ function chargerConfigsCours() {
       }
       return { identifiant, classeDir };
     });
+}
+
+// Vrai si `identifiantCours` désigne un cours "projet" (Equipes/ et Projets/ à
+// côté du dossier des notes élèves), même critère que get_equipes_dir()/
+// get_projets_dir() côté Python (obsidian.py). Résout ELEVES_DIR selon la même
+// règle que load_config() dans depot.py : ancré sur CLASSE_DIR (lui-même
+// résolu par rapport à BASE_DIR) si déclaré, sinon directement sur BASE_DIR.
+// Faux si la config est introuvable ou invalide, sans lever d'exception (sert
+// à décider d'afficher ou non une action de menu).
+function estCoursProjet(identifiantCours) {
+  if (!identifiantCours) return false;
+  const configPath = path.join(CONFIG_COURS_DIR, identifiantCours + ".json");
+  try {
+    const data = lireConfigJson(configPath);
+    if (!data.ELEVES_DIR) return false;
+    const racine = data.CLASSE_DIR ? path.resolve(BASE_DIR, data.CLASSE_DIR) : BASE_DIR;
+    const elevesDir = path.resolve(racine, data.ELEVES_DIR);
+    const racineNotes = path.dirname(elevesDir);
+    return (
+      fs.existsSync(path.join(racineNotes, "Equipes")) &&
+      fs.existsSync(path.join(racineNotes, "Projets"))
+    );
+  } catch (e) {
+    return false;
+  }
 }
 
 // Vrai si `fichier` est situé dans l'arborescence de `dossier`.
@@ -1059,6 +1085,20 @@ module.exports = class LancerServeurPlugin extends Plugin {
               .setIcon("list-checks")
               .onClick(() => this.definirRole(file, "qcm"));
           });
+
+          // Fiche de dépôt (create_depot_note dans obsidian.py) d'un cours
+          // "projet" : permet de (re)lancer manuellement l'évaluation IA des
+          // spécifications (evaluation_projet.py), en particulier pour les
+          // dépôts faits avant la mise en place du déclenchement automatique.
+          const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+          if (fm && fm.eleve && fm.fichier && estCoursProjet(fm.cours)) {
+            menu.addItem((item) => {
+              item
+                .setTitle("Évaluer les spécifications (IA)")
+                .setIcon("sparkles")
+                .onClick(() => this.lancerEvaluationProjet(file));
+            });
+          }
         }
       })
     );
@@ -1570,5 +1610,40 @@ module.exports = class LancerServeurPlugin extends Plugin {
       this.exposeStatusBarEl.remove();
       this.exposeStatusBarEl = null;
     }
+  }
+
+  // Lance evaluation_projet.py sur la fiche de dépôt `file` (create_note_from_analysis
+  // côté Python) : dérive le PDF déposé du nom de la fiche, interroge le modèle et
+  // ajoute l'analyse en fin de note. Prend plusieurs secondes ; process attaché
+  // (comme lancerCorrectionJson) pour pouvoir notifier la fin, mais pas de flux
+  // NDJSON ici, juste stdout/stderr accumulés en cas d'échec.
+  lancerEvaluationProjet(file) {
+    const basePath = this.app.vault.adapter.getBasePath();
+    const cheminAbsolu = path.resolve(basePath, file.path);
+
+    new Notice(`Évaluation IA lancée pour « ${file.basename} »…`);
+
+    let stderr = "";
+    const proc = spawn(PYTHON_BIN, [EVALUATION_PROJET_PY, cheminAbsolu], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    proc.on("error", (err) => {
+      new Notice(`Évaluation IA impossible pour « ${file.basename} » : ${err.message}`);
+    });
+    proc.on("close", (code) => {
+      if (code === 0) {
+        new Notice(`Évaluation IA terminée pour « ${file.basename} ».`);
+      } else {
+        new LogModal(
+          this.app,
+          `Évaluation IA échouée pour « ${file.basename} » (code ${code})`,
+          stderr,
+          EVALUATION_PROJET_PY
+        ).open();
+      }
+    });
   }
 };
