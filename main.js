@@ -495,9 +495,12 @@ function lancerCorrectionJson({ pythonBin, scriptArgs, onLigne, onFin }) {
 class CorrectionView extends ItemView {
   constructor(leaf) {
     super(leaf);
-    // Un élément par copie attendue : {id, ficheFile, eleve, bareme, questions,
-    // statut: "en_attente"|"ok"|"erreur", erreur, valide}. `id` correspond au
-    // champ "id" renvoyé par corrector_cli.py (chemin vault-relatif de la fiche).
+    // Un élément par copie attendue : {id, ficheFile, pdfFile, eleve, bareme,
+    // questions, statut: "en_attente"|"ok"|"erreur", erreur, valide}. `id`
+    // correspond au champ "id" renvoyé par corrector_cli.py (chemin
+    // vault-relatif de la fiche). `pdfFile` est le PDF déposé par l'élève
+    // (même dossier que la fiche), utilisé pour le lien "PDF" de la vue par
+    // élève (renderEleve) et du rapport (construireSectionParEleve).
     this.resultats = [];
     this.enCours = true;
     // Bascule d'affichage : "eleve" (un tableau Q/R/note/justification par
@@ -534,6 +537,7 @@ class CorrectionView extends ItemView {
     this.resultats = tries.map((e) => ({
       id: e.id,
       ficheFile: e.ficheFile,
+      pdfFile: e.pdfFile,
       eleve: e.eleve,
       bareme: e.bareme,
       questions: null,
@@ -706,7 +710,9 @@ class CorrectionView extends ItemView {
     section.style.cssText = "margin-bottom:1em; padding-bottom:1em; border-bottom:1px solid var(--background-modifier-border);";
 
     // En-tête toujours visible : chevron + nom + résumé (état ou note finale)
-    // + badge de validation. Cliquer dessus plie/déplie le détail ci-dessous.
+    // + lien vers le PDF déposé + badge de validation. Cliquer dessus plie/
+    // déplie le détail ci-dessous (le lien PDF stoppe la propagation du clic
+    // pour ne pas déclencher ce plié/déplié en même temps qu'il s'ouvre).
     const header = section.createDiv({ cls: "correction-eleve-header" });
     header.style.cssText = "display:flex; align-items:center; gap:.5em; cursor:pointer;";
     header.addEventListener("click", () => {
@@ -724,6 +730,15 @@ class CorrectionView extends ItemView {
     resume.style.cssText = "opacity:.8;";
     resume.setText(this.resumeTexte(r));
     if (r.statut === "erreur") resume.style.color = "var(--text-error)";
+
+    const lienPdf = header.createEl("a", { text: "PDF", cls: "internal-link" });
+    lienPdf.href = "#";
+    lienPdf.title = r.pdfFile.name;
+    lienPdf.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.app.workspace.openLinkText(r.pdfFile.path, "", true);
+    });
 
     if (r.valide) {
       const badge = header.createSpan({ text: "✓ validé" });
@@ -914,19 +929,24 @@ class CorrectionView extends ItemView {
 
   // Échappe une valeur pour une cellule de tableau markdown : caractères HTML
   // (le texte vient du PDF/LLM, pas de garantie qu'il ne ressemble jamais à une
-  // balise), pipe littéral, et retours à la ligne (interdits dans une cellule,
-  // transformés en <br> — volontairement laissé tel quel, ajouté après coup).
+  // balise) et pipe littéral (les retours à la ligne sont déjà neutralisés par
+  // echapperHtml).
   echapperCellule(texte) {
-    return this.echapperHtml(texte)
-      .replace(/\|/g, "\\|")
-      .replace(/\r?\n/g, "<br>");
+    return this.echapperHtml(texte).replace(/\|/g, "\\|");
   }
 
-  // Échappe une valeur destinée à un contexte HTML brut (ex. <summary>), pour
-  // qu'un nom d'élève ou un message d'erreur contenant "<"/">"/"&" ne casse pas
-  // la structure de la note ou ne soit pas interprété comme une balise.
+  // Échappe une valeur destinée à un contexte HTML brut (ex. <summary>) ou à un
+  // titre de callout (`> [!type]- titre`, toujours sur une seule ligne), pour
+  // qu'un nom d'élève, un énoncé de question ou un message d'erreur contenant
+  // "<"/">"/"&"/un retour à la ligne ne casse pas la structure de la note
+  // (un retour à la ligne brut dans un titre de callout ferait sortir la suite
+  // du texte, et donc tout ce qui suit — table comprise —, du bloc cité).
   echapperHtml(texte) {
-    return String(texte ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return String(texte ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\r?\n/g, "<br>");
   }
 
   // Contenu markdown du rapport : mêmes informations et même présentation que
@@ -936,7 +956,9 @@ class CorrectionView extends ItemView {
   // brut : à l'usage, Obsidian ne réinterprète pas le markdown (tableaux
   // compris) à l'intérieur d'un <details>, alors qu'un callout est prévu pour
   // contenir du markdown riche. Pas de champ modifiable ici, contrairement au
-  // tableau interactif de la vue.
+  // tableau interactif de la vue. Reprend les deux modes de la vue interactive
+  // (voir this.mode) sous forme de deux sections successives — un fichier
+  // markdown statique ne peut pas basculer, donc les deux sont toujours présentes.
   construireRapport() {
     const maintenant = new Date();
     const nbOk = this.resultats.filter((r) => r.statut === "ok").length;
@@ -956,14 +978,28 @@ class CorrectionView extends ItemView {
       .join(" ");
     lignes.push(titre, "");
 
+    lignes.push("## Vue par élève", "");
+    this.construireSectionParEleve(lignes);
+
+    lignes.push("## Vue par question", "");
+    this.construireSectionParQuestion(lignes);
+
+    return lignes.join("\n");
+  }
+
+  // Une section du rapport : un callout repliable par élève, même contenu que
+  // renderEleve (nom + résumé toujours visibles, lien vers le PDF déposé puis
+  // détail question/réponse/note/justification au dépli). Ajoute ses lignes à
+  // `lignes` (mutation, comme le reste de la construction du rapport).
+  construireSectionParEleve(lignes) {
     for (const r of this.resultats) {
       const typeCallout = r.statut === "erreur" ? "failure" : r.statut === "ok" ? "success" : "note";
       const titreCallout = `${this.echapperHtml(r.eleve)} — ${this.echapperHtml(this.resumeTexte(r))}`;
       lignes.push(`> [!${typeCallout}]- ${titreCallout}`);
 
-      const corps = [];
+      const corps = [`[[${r.pdfFile.path}|${this.echapperCellule(r.pdfFile.name)}]]`, ""];
       if (r.statut === "erreur") {
-        corps.push(`Erreur : ${r.erreur}`);
+        corps.push(`Erreur : ${this.echapperHtml(r.erreur)}`);
       } else if (r.statut !== "ok") {
         corps.push("Non traité.");
       } else {
@@ -982,8 +1018,43 @@ class CorrectionView extends ItemView {
 
       lignes.push("");
     }
+  }
 
-    return lignes.join("\n");
+  // Une section du rapport : un callout repliable par question, même contenu
+  // que renderParQuestion/renderQuestion (une entrée par question, listant
+  // élève/réponse/note/justification pour toutes les copies déjà corrigées ;
+  // les copies en erreur n'ont pas de questions à afficher, comme dans la vue
+  // interactive).
+  construireSectionParQuestion(lignes) {
+    const corriges = this.resultats.filter((r) => r.statut === "ok");
+    const nbErreurs = this.resultats.filter((r) => r.statut === "erreur").length;
+
+    if (nbErreurs > 0) {
+      lignes.push(`*${nbErreurs} copie(s) en erreur non incluse(s) dans cette vue (voir la vue par élève).*`, "");
+    }
+
+    if (corriges.length === 0) {
+      lignes.push("*Aucune copie corrigée.*", "");
+      return;
+    }
+
+    const nbQuestions = corriges[0].questions.length;
+    for (let i = 0; i < nbQuestions; i++) {
+      const titreCallout = `Question ${i + 1} — ${this.echapperHtml(corriges[0].questions[i].Q)}`;
+      lignes.push(`> [!note]- ${titreCallout}`);
+
+      const corps = ["| Élève | Réponse | Note | Justification |", "| --- | --- | --- | --- |"];
+      for (const r of corriges) {
+        const q = r.questions[i];
+        if (!q) continue;
+        corps.push(
+          `| ${this.echapperCellule(r.eleve)} | ${this.echapperCellule(q.R)} | ${q.note} | ${this.echapperCellule(q.justification)} |`
+        );
+      }
+      for (const ligneCorps of corps) lignes.push(ligneCorps === "" ? ">" : `> ${ligneCorps}`);
+
+      lignes.push("");
+    }
   }
 
   // Écrit le rapport dans le dossier de dépôt du cours et l'ouvre dans un
@@ -1119,6 +1190,25 @@ module.exports = class LancerServeurPlugin extends Plugin {
     this.addRibbonIcon("server", "Serveur de dépôt : lancer ou configurer", () => {
       this.ouvrirActionsServeur();
     });
+
+    // Confirmation à la fermeture du coffre (fenêtre Electron) si un serveur
+    // de dépôt est actif : registerDomEvent nettoie l'écouteur automatiquement
+    // au unload du plugin. Le serveur est lancé détaché exprès (voir
+    // lancerPythonDetache) pour survivre à une fermeture non confirmée : cette
+    // confirmation ne bloque donc jamais la fermeture du coffre elle-même,
+    // seul l'arrêt du serveur est soumis au choix de l'enseignant.
+    this.registerDomEvent(window, "beforeunload", () => this.confirmerArretALaFermeture());
+  }
+
+  // window.confirm() est bloquant : la fermeture du coffre attend la réponse
+  // avant de se poursuivre, sans qu'il soit nécessaire d'intercepter/rejouer
+  // l'événement de fermeture (contrairement à un preventDefault()).
+  confirmerArretALaFermeture() {
+    if (!this.session) return;
+    const arreter = window.confirm(
+      `Le serveur de dépôt est actif (cours « ${this.session.cours} »). L'arrêter avant de fermer le coffre ?`
+    );
+    if (arreter) this.stop_server();
   }
 
   // Ruban : menu des actions du serveur de dépôt.
@@ -1418,6 +1508,7 @@ module.exports = class LancerServeurPlugin extends Plugin {
       entrees.push({
         id: fiche.path,
         ficheFile: fiche,
+        pdfFile,
         eleve: fm.eleve || fiche.basename,
         bareme: typeof fm.bareme === "number" ? fm.bareme : 20,
         pdfAbsolu: path.resolve(basePath, pdfFile.path),
