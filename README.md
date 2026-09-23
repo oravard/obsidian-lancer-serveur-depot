@@ -19,8 +19,11 @@ le plugin :
 2. lance `../corrector_cli.py` en sous-processus sur les copies élèves
    trouvées, et ouvre un onglet affichant les résultats au fil de l'eau
    (question / réponse / note éditable / justification par élève) ;
-3. le bouton **Valider tout** écrit `note`, `corrige` et le détail
-   (`corrections`) dans le frontmatter de chaque fiche de dépôt.
+3. le bouton **Valider tout** écrit `note` et `corrige` dans le frontmatter de
+   chaque fiche de dépôt, et le détail de la correction (tableau question /
+   réponse / note / justification, même présentation que le rapport) dans le
+   **corps** de la fiche — une correction précédente pour ce devoir y est
+   remplacée, jamais dupliquée.
 
 Tout est dans `main.js` : Obsidian charge le plugin sans passer par un
 `require()` Node classique (pas de résolution relative fiable vers un fichier

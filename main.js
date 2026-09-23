@@ -454,6 +454,13 @@ class LogModal extends Modal {
 
 const VIEW_TYPE_CORRECTION = "correction-devoirs-view";
 
+// Marqueurs délimitant la section de correction dans le corps d'une fiche de
+// dépôt (voir CorrectionView.ecrireCorrectionDansCorps) : permettent de
+// retrouver une correction précédemment écrite pour la remplacer plutôt que
+// la dupliquer si "Valider tout" est relancé sur la même fiche.
+const CORRECTION_MARQUEUR_DEBUT = "<!-- correction-devoir:début -->";
+const CORRECTION_MARQUEUR_FIN = "<!-- correction-devoir:fin -->";
+
 // Lance `pythonBin scriptArgs` en process attaché (pas détaché, contrairement à
 // lancerPythonDetache : on veut lire son stdout au fil de l'eau, et il se
 // termine de lui-même une fois le lot corrigé). stdout est traité comme du
@@ -900,13 +907,9 @@ class CorrectionView extends ItemView {
         await this.app.fileManager.processFrontMatter(r.ficheFile, (fm) => {
           fm.note = noteFinale;
           fm.corrige = true;
-          fm.corrections = r.questions.map((q) => ({
-            question: q.Q,
-            reponse_eleve: q.R,
-            note: q.note,
-            justification: q.justification,
-          }));
+          delete fm.corrections; // détail désormais dans le corps, voir ecrireCorrectionDansCorps
         });
+        await this.ecrireCorrectionDansCorps(r, noteFinale);
         r.valide = true;
         compte++;
       } catch (e) {
@@ -916,6 +919,40 @@ class CorrectionView extends ItemView {
     new Notice(`${compte} note(s) enregistrée(s).`);
     this.render();
     await this.genererRapport();
+  }
+
+  // Contenu markdown du détail de correction pour un seul élève : un callout
+  // repliable reprenant la même présentation (tableau Question/Réponse élève/
+  // Note/Justification puis note finale) que la section "par élève" du rapport
+  // de correction (voir construireSectionParEleve), pour rester cohérent visuellement.
+  construireSectionCorrection(r, noteFinale) {
+    const titre = [this.type, this.cours ? `(${this.cours})` : null].filter(Boolean).join(" ");
+    const suffixeTitre = titre ? ` ${this.echapperHtml(titre)} — ` : " ";
+    const lignes = [`> [!success]- Correction${suffixeTitre}Note : ${noteFinale.toFixed(2)} / ${r.bareme}`];
+    lignes.push("> | Question | Réponse élève | Note | Justification |");
+    lignes.push("> | --- | --- | --- | --- |");
+    for (const q of r.questions) {
+      lignes.push(
+        `> | ${this.echapperCellule(q.Q)} | ${this.echapperCellule(q.R)} | ${q.note} | ${this.echapperCellule(q.justification)} |`
+      );
+    }
+    lignes.push(">");
+    lignes.push(`> **Note finale : ${noteFinale.toFixed(2)} / ${r.bareme}**`);
+    return lignes.join("\n");
+  }
+
+  // Écrit (ou remplace si une correction précédente pour ce devoir existe déjà
+  // dans cette fiche) le détail de la correction dans le corps de la fiche de
+  // dépôt, entre CORRECTION_MARQUEUR_DEBUT/FIN. processFrontMatter ne porte que
+  // sur le frontmatter, d'où la lecture/écriture manuelle du fichier complet ici.
+  async ecrireCorrectionDansCorps(r, noteFinale) {
+    const bloc = `${CORRECTION_MARQUEUR_DEBUT}\n${this.construireSectionCorrection(r, noteFinale)}\n${CORRECTION_MARQUEUR_FIN}`;
+    const motifExistant = new RegExp(`${CORRECTION_MARQUEUR_DEBUT}[\\s\\S]*?${CORRECTION_MARQUEUR_FIN}`);
+    const contenu = await this.app.vault.read(r.ficheFile);
+    const nouveauContenu = motifExistant.test(contenu)
+      ? contenu.replace(motifExistant, bloc)
+      : contenu.replace(/\n*$/, "") + "\n\n" + bloc + "\n";
+    await this.app.vault.modify(r.ficheFile, nouveauContenu);
   }
 
   // Dossier de dépôt du cours (parent des sous-dossiers <eleve>/), déduit de la
