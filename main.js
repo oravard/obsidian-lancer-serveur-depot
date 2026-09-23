@@ -1157,37 +1157,46 @@ module.exports = class LancerServeurPlugin extends Plugin {
 
         const ext = file.extension.toLowerCase();
 
-        // Document de séance : PDF ou document Word (.doc/.docx).
+        // Serveur de dépôt : document de séance (PDF ou Word) et support de
+        // cours (PDF exclusif), regroupés dans un sous-menu.
         if (ext === "pdf" || ext === "doc" || ext === "docx") {
           menu.addItem((item) => {
-            item
-              .setTitle("Serveur de dépôt · ce document comme document de séance")
-              .setIcon("upload")
-              .onClick(() => this.definirRole(file, "documentSeance"));
+            item.setTitle("Serveur de dépôt").setIcon("upload");
+            const sousMenu = item.setSubmenu();
+            sousMenu.addItem((sousItem) => {
+              sousItem
+                .setTitle("Ce document comme document de séance")
+                .setIcon("upload")
+                .onClick(() => this.definirRole(file, "documentSeance"));
+            });
+            if (ext === "pdf") {
+              sousMenu.addItem((sousItem) => {
+                sousItem
+                  .setTitle("Ce PDF comme support de cours")
+                  .setIcon("book-open")
+                  .onClick(() => this.definirRole(file, "supportCours"));
+              });
+            }
           });
         }
-        // Support de cours : PDF exclusif.
+        // Correction automatique de devoirs (corrector.py) : PDF exclusif,
+        // regroupés dans un sous-menu.
         if (ext === "pdf") {
           menu.addItem((item) => {
-            item
-              .setTitle("Serveur de dépôt · ce PDF comme support de cours")
-              .setIcon("book-open")
-              .onClick(() => this.definirRole(file, "supportCours"));
-          });
-        }
-        // Correction automatique de devoirs (corrector.py) : PDF exclusif.
-        if (ext === "pdf") {
-          menu.addItem((item) => {
-            item
-              .setTitle("Corriger un devoir · ce PDF comme document de séance")
-              .setIcon("file-check")
-              .onClick(() => this.definirRoleCorrection(file, "originalPdf"));
-          });
-          menu.addItem((item) => {
-            item
-              .setTitle("Corriger un devoir · ce PDF comme corrigé professeur")
-              .setIcon("file-check-2")
-              .onClick(() => this.definirRoleCorrection(file, "profPdf"));
+            item.setTitle("Corriger un devoir").setIcon("file-check");
+            const sousMenu = item.setSubmenu();
+            sousMenu.addItem((sousItem) => {
+              sousItem
+                .setTitle("Ce PDF comme document de séance")
+                .setIcon("file-check")
+                .onClick(() => this.definirRoleCorrection(file, "originalPdf"));
+            });
+            sousMenu.addItem((sousItem) => {
+              sousItem
+                .setTitle("Ce PDF comme corrigé professeur")
+                .setIcon("file-check-2")
+                .onClick(() => this.definirRoleCorrection(file, "profPdf"));
+            });
           });
         }
         if (ext === "md") {
