@@ -1118,6 +1118,93 @@ class CorrectionView extends ItemView {
   }
 }
 
+const VIEW_TYPE_SERVEUR_LOG = "serveur-log-view";
+
+// Vue affichant en direct la sortie standard/erreur de serveur.py (LOG_PATH),
+// par « tail » du fichier (polling périodique toutes les secondes), jamais
+// par process attaché : serveur.py est un process long (des heures), lancé
+// détaché exprès (voir lancerPythonDetache) pour survivre à un rechargement
+// du plugin. Un spawn attaché dont le pipe stdout ne serait plus drainé (vue
+// fermée, plugin rechargé — la référence JS vers le process est alors perdue)
+// finirait par saturer son buffer, rendant les écritures de serveur.py
+// BLOQUANTES — risque de geler le serveur de dépôt en pleine séance pour un
+// gain purement cosmétique. Le tail par polling n'a aucun effet de bord sur
+// le process surveillé, quoi qu'il arrive côté Obsidian.
+class ServeurLogView extends ItemView {
+  getViewType() {
+    return VIEW_TYPE_SERVEUR_LOG;
+  }
+
+  getDisplayText() {
+    return "Journal du serveur";
+  }
+
+  getIcon() {
+    return "scroll-text";
+  }
+
+  async onOpen() {
+    const container = this.contentEl;
+    container.empty();
+    container.addClass("serveur-log-view");
+    container.style.cssText = "display:flex; flex-direction:column; height:100%; padding:0;";
+
+    const barre = container.createDiv();
+    barre.style.cssText =
+      "padding:.5em 1em; flex:0 0 auto; opacity:.7; font-size:.85em; " +
+      "border-bottom:1px solid var(--background-modifier-border);";
+    barre.setText(LOG_PATH);
+
+    this.pre = container.createEl("pre");
+    this.pre.style.cssText =
+      "flex:1 1 auto; overflow:auto; margin:0; padding:1em; white-space:pre-wrap; " +
+      "font-family:var(--font-monospace); font-size:.85em;";
+
+    // Offset de départ : ne montre que ce qui s'écrit APRÈS l'ouverture de la
+    // vue, même logique que logOffset dans lancerPythonDetache — pas de rejeu
+    // de tout l'historique cumulé (LOG_PATH grandit à travers plusieurs
+    // relances du serveur au sein d'une même séance).
+    try {
+      this.logOffset = fs.statSync(LOG_PATH).size;
+    } catch (e) {
+      this.logOffset = 0;
+    }
+
+    this.tailLog();
+    this.registerInterval(window.setInterval(() => this.tailLog(), 1000));
+  }
+
+  tailLog() {
+    let stats;
+    try {
+      stats = fs.statSync(LOG_PATH);
+    } catch (e) {
+      return; // fichier pas encore créé : rien à afficher
+    }
+    if (stats.size < this.logOffset) {
+      // Fichier tronqué/recréé depuis l'ouverture (cas limite, jamais fait
+      // par ce plugin aujourd'hui) : on repart de l'offset courant plutôt que
+      // de planter sur une lecture hors bornes.
+      this.logOffset = stats.size;
+    }
+    if (stats.size === this.logOffset) return; // rien de nouveau
+
+    const buffer = Buffer.alloc(stats.size - this.logOffset);
+    const fd = fs.openSync(LOG_PATH, "r");
+    try {
+      fs.readSync(fd, buffer, 0, buffer.length, this.logOffset);
+    } finally {
+      fs.closeSync(fd);
+    }
+    this.logOffset = stats.size;
+
+    const texte = buffer.toString("utf8").replace(/\x1b\[[0-9;]*m/g, ""); // retire les couleurs ANSI
+    const enBas = this.pre.scrollHeight - this.pre.scrollTop - this.pre.clientHeight < 20;
+    this.pre.textContent += texte;
+    if (enBas) this.pre.scrollTop = this.pre.scrollHeight;
+  }
+}
+
 module.exports = class LancerServeurPlugin extends Plugin {
   async onload() {
     // Session courante du serveur : null tant qu'aucun serveur n'a été lancé.
@@ -1127,6 +1214,16 @@ module.exports = class LancerServeurPlugin extends Plugin {
     // Réinitialisée par stop_server().
     this.session = null;
     this.statusBarEl = null;
+
+    // Blocage internet voulu pour le prochain lancement/relance du serveur
+    // (voir ouvrirActionsServeur/toggleBloquerInternet, lancerServeur) :
+    // volontairement découplé de this.session (sinon écrasé silencieusement à
+    // chaque reconstruction de session dans appliquerRole/
+    // lancerDepotSansDocuments) et jamais persisté sur disque (repart toujours
+    // à false au rechargement du plugin — sécurité par défaut contre l'oubli
+    // d'un blocage resté armé d'une fois sur l'autre). Réinitialisé à false
+    // par stop_server() (même raisonnement).
+    this.bloquerInternetSouhaite = false;
 
     // État du serveur expose_dir.py (indépendant du serveur de dépôt) : chemin
     // absolu du dossier exposé, ou null. Réinitialisé par stopExposeDir().
@@ -1140,6 +1237,7 @@ module.exports = class LancerServeurPlugin extends Plugin {
     this.correction = null;
 
     this.registerView(VIEW_TYPE_CORRECTION, (leaf) => new CorrectionView(leaf));
+    this.registerView(VIEW_TYPE_SERVEUR_LOG, (leaf) => new ServeurLogView(leaf));
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
@@ -1271,22 +1369,56 @@ module.exports = class LancerServeurPlugin extends Plugin {
     const compatibles = configs.filter((c) => c.classeDir && dossiersLies(c.classeDir, vault));
 
     const actions = [
+      {
+        id: "toggle-bloquer-internet",
+        label: this.bloquerInternetSouhaite
+          ? "🔒  Bloquer Internet : activé (cliquer pour désactiver)"
+          : "🔓  Bloquer Internet : désactivé (cliquer pour activer)",
+      },
       { id: "lancer", label: "▶  Lancer le serveur de dépôt (sans documents associés)" },
       ...compatibles.map((c) => ({
         id: "configurer",
         cours: c.identifiant,
         label: `⚙  Configurer « ${c.identifiant} »`,
       })),
+      { id: "voir-journal", label: "📜  Voir le journal du serveur en direct" },
     ];
 
     new ActionsServeurModal(this.app, actions, (action) => {
       // Ouverture différée d'un tick : le modal suivant serait sinon déclenché
       // pendant la fermeture de ce SuggestModal (cf. appliquerRole / ChoixModeQcmModal).
       setTimeout(() => {
-        if (action.id === "lancer") this.lancerDepotSansDocuments(compatibles);
+        if (action.id === "toggle-bloquer-internet") this.toggleBloquerInternet();
+        else if (action.id === "lancer") this.lancerDepotSansDocuments(compatibles);
+        else if (action.id === "voir-journal") this.ouvrirJournalServeur();
         else this.ouvrirEditeurConfig(action.cours);
       }, 0);
     }).open();
+  }
+
+  // Bascule le blocage internet voulu pour le prochain lancement/relance du
+  // serveur. Si un serveur tourne déjà, relance immédiatement pour appliquer
+  // le nouvel état — pour un réglage de sécurité, il serait dangereux qu'un
+  // clic ici reste sans effet tant que l'enseignant ne touche pas un document
+  // par ailleurs (voir lancerServeur).
+  toggleBloquerInternet() {
+    this.bloquerInternetSouhaite = !this.bloquerInternetSouhaite;
+    new Notice("Blocage internet : " + (this.bloquerInternetSouhaite ? "activé" : "désactivé"));
+    if (this.session) this.lancerServeur();
+  }
+
+  // Ouvre (ou révèle si déjà ouverte) la vue de journal en direct du serveur.
+  ouvrirJournalServeur() {
+    const existante = this.app.workspace.getLeavesOfType(VIEW_TYPE_SERVEUR_LOG)[0];
+    if (existante) {
+      this.app.workspace.revealLeaf(existante);
+      return;
+    }
+    (async () => {
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({ type: VIEW_TYPE_SERVEUR_LOG, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    })();
   }
 
   // Lance serveur.py en mode dépôt simple : --cours seul, sans --document-seance,
@@ -1628,12 +1760,14 @@ module.exports = class LancerServeurPlugin extends Plugin {
     if (supportCours) args.push("--support-cours", supportCours);
     if (qcm) args.push("--qcm", qcm);
     if (qcm && fullscreen) args.push("--fullscreen");
+    if (this.bloquerInternetSouhaite) args.push("--bloquer-internet");
 
     const resume = [
       `cours "${cours}"`,
       documentSeance ? "séance : " + path.basename(documentSeance) : null,
       supportCours ? "support : " + path.basename(supportCours) : null,
       qcm ? "QCM : " + path.basename(qcm) + (fullscreen ? " (plein écran)" : "") : null,
+      this.bloquerInternetSouhaite ? "🔒 internet bloqué" : null,
     ]
       .filter(Boolean)
       .join(" — ");
@@ -1663,11 +1797,12 @@ module.exports = class LancerServeurPlugin extends Plugin {
     // mode (+ la croix d'arrêt). Les noms de fichiers, potentiellement longs,
     // élargiraient sinon le bouton de la barre de statut — ils passent donc dans
     // l'infobulle (aria-label, affichée au survol par Obsidian).
-    const mode = this.session.qcm
-      ? (this.session.fullscreen ? "QCM plein écran" : "QCM")
-      : "Dépôt";
+    const mode =
+      (this.session.qcm ? (this.session.fullscreen ? "QCM plein écran" : "QCM") : "Dépôt") +
+      (this.bloquerInternetSouhaite ? " 🔒" : "");
 
     const details = [`cours « ${this.session.cours} »`];
+    if (this.bloquerInternetSouhaite) details.push("🔒 internet bloqué pour les postes élèves");
     if (this.session.documentSeance) details.push("séance : " + path.basename(this.session.documentSeance));
     if (this.session.supportCours) details.push("support : " + path.basename(this.session.supportCours));
     if (this.session.qcm) details.push("QCM : " + path.basename(this.session.qcm));
@@ -1694,6 +1829,18 @@ module.exports = class LancerServeurPlugin extends Plugin {
           .join(", ")
       : "";
     new Notice("Serveur stoppé !" + (docs ? " (" + docs + ")" : ""));
+
+    // Le processus meurt sans préavis pour les postes élèves (indiscernable
+    // d'un crash de leur côté) : le déblocage du proxy système ne survient
+    // qu'après quelques échecs de sonde consécutifs côté launcher.pyw (voir
+    // _on_disconnected/DISCONNECT_THRESHOLD), pas instantanément.
+    if (this.bloquerInternetSouhaite) {
+      new Notice("Le blocage internet des postes élèves sera levé sous ~15 secondes.");
+    }
+    // Reset à chaque arrêt (choix assumé) : évite qu'un blocage activé pour un
+    // contrôle reste "armé" par oubli et se réapplique silencieusement à la
+    // séance suivante, au prix de devoir le réactiver à chaque contrôle.
+    this.bloquerInternetSouhaite = false;
 
     this.session = null;
     if (this.statusBarEl) {

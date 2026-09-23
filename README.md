@@ -25,6 +25,22 @@ le plugin :
    **corps** de la fiche — une correction précédente pour ce devoir y est
    remplacée, jamais dupliquée.
 
+### Blocage internet pendant un contrôle
+
+Menu ruban (icône « server ») → *Bloquer Internet* : bascule à cocher,
+indépendante d'un fichier précis. Activée, elle ajoute `--bloquer-internet` au
+prochain lancement/relance du serveur (relance immédiatement si un serveur
+tourne déjà) — voir [`../README.md`](../README.md#blocage-internet-proxy-pendant-un-contrôle)
+pour la portée réelle du blocage et ses limites. Se réinitialise à chaque
+arrêt du serveur (pas de blocage qui reste armé par oubli d'une séance à
+l'autre).
+
+Le même menu ruban donne aussi accès à *Voir le journal du serveur en
+direct* : onglet Obsidian qui tail `~/serveur.log` (mode dégradé volontaire :
+pas de spawn attaché sur `serveur.py`, qui reste lancé détaché — voir
+`lancerPythonDetache` dans `main.js` — pour ne jamais risquer de geler le
+serveur si personne ne lit plus sa sortie).
+
 Tout est dans `main.js` : Obsidian charge le plugin sans passer par un
 `require()` Node classique (pas de résolution relative fiable vers un fichier
 voisin), donc pas de découpage possible en plusieurs fichiers `.js` sans
